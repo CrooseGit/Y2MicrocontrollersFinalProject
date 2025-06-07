@@ -1,0 +1,1772 @@
+KMD
+00000000:             ; ;-----------------------------------------------------
+00000000:             ; ; Square waves have never sounded so sweet.
+00000000:             ; ; R. Cruise
+00000000:             ; ; Version 1.0
+00000000:             ; ; 28 April 2025
+00000000:             ; ;
+00000000:             ; ; 
+00000000:             ; ;
+00000000:             ; ; Last modified: 09/05/25 
+00000000:             ; ;
+00000000:             ; ; Known bugs: None
+00000000:             ; ;
+00000000:             ; ; Note: Stacks grow from small to large memory addresses    
+00000000:             ; ;-----------------------------------------------------
+00000000:             ; 
+00000000:             ; ; Machine Space: -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  
+                      ; -  -  -  -  -  -
+00000000:             ; ; Program Setup: ------------------------
+00000000:             ;             ; Initialise exception vectors:
+00000000: 00000297    ;             LA      T0, TRAPPER                 ; Load Trap Handler pointer
+00000004: 26428293    ; 
+00000008: 30529073    ;             CSRW    MTVEC, T0                   ; Save address in system CSR
+0000000C:             ;             
+0000000C:             ;             ; Initialise System Stack:
+0000000C: 00000117    ;             LA      SP, OS_STACK
+00000010: 06410113    ; 
+00000014: 34011073    ;             CSRW    MSCRATCH, SP                ; Copy ‘machine’ SP for use in handler
+00000018: 00040117    ;             LA      SP, MAIN_STACK              ; Change SP to user space
+0000001C: FE810113    ; 
+00000020:             ;         
+00000020:             ;             ; Initialise peripherals
+00000020: 7DC000EF    ;             JAL     BUZZER_INIT
+00000024: 564000EF    ;             JAL     LCD_CLEAR
+00000028:             ; 
+00000028:             ;             ; Set interrupt enable bits on controller (enable buzzer controller (user expansion
+                      ; ) interrupt)
+00000028: 000102B7    ;             LI      T0, INTERRUPT_ADDR
+0000002C: 40028293    ; 
+00000030: 01100313    ;             LI      T1, ((0b1 << INTERRUPT_BZR_BIT) + (0b1 << INTERRUPT_TMR_BIT))
+00000034: 0062A223    ;             SW      T1, INTERRUPT_EN_O[T0]
+00000038:             ; 
+00000038:             ;             ; Clear edge register
+00000038: FFF00313    ;             LI      T1, -1
+0000003C: 0062A823    ;             SW      T1, INTERRUPT_EDGE_O[T0]
+00000040:             ; 
+00000040:             ;             ; Set MIE (Machine interrupt enable) to enable interrupts from the interrupt contro
+                      ; ller
+00000040: 000012B7    ;             LI      T0, (0b1 << 11) 
+00000044: 80028293    ; 
+00000048: 30429073    ;             CSRW    MIE, T0         ; Bit 11 is our external interrupt controller
+0000004C:             ; 
+0000004C:             ;             ; Set bits in MStatus
+0000004C: 00800293    ;             LI      T0, (0b1 << 3)  ; Set bit 3, MIE
+00000050: 3002A073    ;             CSRS    MSTATUS, T0
+00000054:             ;             
+00000054:             ;             ; Set return mode to user:
+00000054: 000022B7    ;             LI      T0, 0x0000_1800             ; Load MPP mask - bits 12 & 11 - MPP is two bit
+00000058: 80028293    ; s that hold the previous privilege level
+0000005C: 3002B073    ;             CSRC    MSTATUS, T0                 ; Clear MPP bits in status - effectively saying
+                      ;  the previous level was user
+00000060:             ;             
+00000060:             ;             ; Set return address to user space:  
+00000060: 00040097    ;             LA      RA, MAIN                    ; Point at user code start
+00000064: 19408093    ; 
+00000068: 34109073    ;             CSRW    MEPC, RA                    ; Save as ‘return address’
+0000006C:             ; 
+0000006C: 30200073    ;             MRET                                ; ‘Return’ to programme start
+00000070:             ; ; ---------------------------------------
+00000070:             ; 
+00000070:             ; ; System stack: -------------------------
+00000070:             ; ALIGN
+00000070:             ; OS_STACK   DEFS 500
+00000264:             ; OS_STACK_TOP
+00000264:             ; ; ---------------------------------------
+00000264:             ; 
+00000264:             ; ; System Library Imports ----------------
+00000264:             ; ALIGN
+00000264:             ; INCLUDE    ../Bibliotecas/System/TRAPPER.s          ; For handling traps 
+00000264:             ; ;-----------------------------------------------------
+00000264:             ; ; Library for handling traps
+00000264:             ; ; R. Cruise
+00000264:             ; ; Version 1.0
+00000264:             ; ; 24 February 2025
+00000264:             ; ;
+00000264:             ; ;
+00000264:             ; ; Last modified: 09/05/25 
+00000264:             ; ;
+00000264:             ; ; Known bugs: None.
+00000264:             ; ;
+00000264:             ; ; Dependencies: LCD.s, UTIL.s, TIMER.s, BUTTONS.s, KEYPAD.s, EXT_I_HANDLER.s, E_CALL_HANDLER.s,
+                      ;  BUZZER.s
+00000264:             ; ;-----------------------------------------------------
+00000264:             ; 
+00000264:             ; 
+00000264:             ; ; Trap Handler:
+00000264:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000264:             ; TRAPPER
+00000264: 34011173    ;             CSRRW   SP, MSCRATCH, SP                ; Moves user stack pointer into MSCRATCH, a
+                      ; nd Machine stack pointer from MSCRATCH into SP.
+00000268:             ;             ; Preserve Registers: --------------------------------------------
+00000268:             ;             ; Preserves only the registers used in this file, its up to the ECALL and interrupt
+                      ;  handler to sort themselves out.
+00000268: 00C10113    ;             ADDI    SP, SP, 4*3
+0000026C: FE112C23    ;             SW      RA, -4*2[SP]
+00000270: FE512E23    ;             SW      T0, -4*1[SP]
+00000274: 00612023    ;             SW      T1, [SP]
+00000278:             ;             ; ----------------------------------------------------------------
+00000278:             ; 
+00000278: 342022F3    ;             CSRR    T0, MCAUSE                  ; Read why we came here
+0000027C: 00800313    ;             LI      T1, 8                       ; User ECALL cause code
+00000280: 02628063    ;             BEQ     T0, T1, ECALL_HANDLER       ; Is it a software interrupt (system call)?
+00000284: 0C02CA63    ;             BLTZ    T0, EXTERNAL_I_HANDLER      ; Is it a hardware interrupt?
+00000288:             ; 
+00000288:             ;             ; ... space to add other interrupt sources
+00000288:             ; 
+00000288:             ; 
+00000288:             ; TRAPPER_EXIT
+00000288:             ;             ; Restore Registers: --------------------------------------------
+00000288: FF812083    ;             LW      RA, -4*2[SP]
+0000028C: FFC12283    ;             LW      T0, -4*1[SP]
+00000290: 00012303    ;             LW      T1, [SP]
+00000294: FF410113    ;             SUBI    SP, SP, 4*3
+00000298:             ;             ; ----------------------------------------------------------------
+00000298: 34011173    ;             CSRRW   SP, MSCRATCH, SP            ; Swaps the user stack pointer back into SP, et
+                      ; c.
+0000029C:             ; 
+0000029C: 30200073    ;             MRET
+000002A0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000002A0:             ; 
+000002A0:             ; 
+000002A0:             ; ALIGN
+000002A0:             ; INCLUDE    ../Bibliotecas/System/E_CALL_HANDLER.s   ; For handling sys calls 
+000002A0:             ; ;-----------------------------------------------------
+000002A0:             ; ; Library for handling system calls
+000002A0:             ; ; R. Cruise
+000002A0:             ; ; Version 1.0
+000002A0:             ; ; 28 March 2025
+000002A0:             ; ;
+000002A0:             ; ;
+000002A0:             ; ; Last modified: 09/05/25 
+000002A0:             ; ;
+000002A0:             ; ; Known bugs: None.
+000002A0:             ; ;
+000002A0:             ; ; Dependencies: LCD.s, UTIL.s, TIMER.s, BUTTONS.s, KEYPAD.s, TRAPPER.s, BUZZER.s
+000002A0:             ; ;-----------------------------------------------------
+000002A0:             ; 
+000002A0:             ; ; Sys call handler
+000002A0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000002A0:             ; ECALL_HANDLER       ; A7: ECALL index, A0: Argument
+000002A0:             ; 
+000002A0:             ;             ; Should only preserve save registers if used, Temp & arg registers are expected to
+                      ;  be invalidated when a sys call is called (or any function). And RA has already been preserved 
+                      ; in TRAPPER.s.
+000002A0:             ;             ; Consequentially, in this circumstance, no registers need preserving.
+000002A0:             ;            
+000002A0:             ; 
+000002A0: 01100293    ;             LI      T0, ECALL_OOB               ; Check ECALL index is in range
+000002A4: 0658F663    ;             BGEU    A7, T0, ECALL_X             ; Out of range index defaults to ECALL_X
+000002A8: 00000297    ;             LA      T0, ECALL_JUMP              ; Load jump table address
+000002AC: 06C28293    ; 
+000002B0: 00289313    ;             SLLI    T1, A7, 2                   ; Calculate index (in words)
+000002B4: 006282B3    ;             ADD     T0, T0, T1                  ;
+000002B8: 0002A283    ;             LW      T0, [T0]                    ; Load address of service routine
+000002BC: 000280E7    ;             JALR    T0                          ; and jump to it, return here after
+000002C0:             ; 
+000002C0:             ;             ;J       ECALL_HANDLER_END          ; Deliberately commented as the target is the n
+                      ; ext instruction.
+000002C0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000002C0:             ; 
+000002C0:             ; ; Sys call handler exit code
+000002C0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000002C0:             ; ECALL_HANDLER_END ; ---------------------------------------  
+000002C0:             ; 
+000002C0: 341292F3    ;             CSRRW   T0, MEPC, T0                ; Load address of trapping instruction
+000002C4: 00428293    ;             ADDI    T0, T0, 4                   ; Increment to point at next instruction (don't
+                      ;  want to execute trapping instruction again.)
+000002C8: 341292F3    ;             CSRRW   T0, MEPC, T0                ; Store address to return to back to MEPCx`
+000002CC: FBDFF06F    ;             J       TRAPPER_EXIT
+000002D0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000002D0:             ; 
+000002D0:             ; ; ECALL Routines:
+000002D0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000002D0:             ; ECALL_0 ; Terminate program: -------------------------------------
+000002D0: 0000006F    ;             J       .
+000002D4:             ; ; ----------------------------------------------------------------
+000002D4:             ; ECALL_3 ; Print Number to standard output: -----------------------
+000002D4:             ;         ; A0: Number 
+000002D4:             ;             
+000002D4: 598000EF    ;             JAL     UINT_TO_BCD                 ; Converts A0 to BCD, stores to A0
+000002D8: 230000EF    ;             JAL     LCD_P_BCD                   ; Prints BCD value to LCD
+000002DC:             ; 
+000002DC: FE5FF06F    ;             J       ECALL_HANDLER_END           ; Could use RET, but then would have to save an
+                      ; d restore RA, and as we know where we are returning to, there is no need.
+000002E0:             ;                                                 ; Could also use another LR, X5 is suggested by
+                      ;  the ABI I hear, but this works fine.
+000002E0:             ; 
+000002E0:             ; ; Sys call used by the user that takes a pair of addresses, into which the debounced key inform
+                      ; ation will appear. Allowing user code to take key inputs.
+000002E0:             ; ECALL_15 ; Read keystream: -------------------------
+000002E0:             ;         ; A0: pointer to location in user space to write keypresses to
+000002E0:             ;         ; A1: pointer to location in user space to flag changes
+000002E0:             ; 
+000002E0: 428000EF    ;             JAL     KP_INIT                     ; Setup keypad
+000002E4:             ; 
+000002E4: 00000297    ;             SW      A0, STREAM_ADDR, T0         ; Save user space addresses that hold the key a
+000002E8: 1CA2AE23    ; nd flag
+000002EC: 00000297    ;             SW      A1, STREAM_F_ADDR, T0
+000002F0: 1CB2AC23    ; 
+000002F4: 378000EF    ;             JAL     TIMER_INIT                  
+000002F8: 00002537    ;             LI      A0, (8000 - 1)              ; 8000 micro seconds = 0.008 seconds, 125Hz (st
+000002FC: F3F50513    ; andard sample rate for old keyboards)
+00000300: 390000EF    ;             JAL     TIMER_MODULUS_ENABLE
+00000304: 3A4000EF    ;             JAL     TIMER_INTERRUPT_ENABLE            
+00000308: 374000EF    ;             JAL     TIMER_START
+0000030C:             ; 
+0000030C:             ;             ; Dynamically Linking tasks to interrupt handlers would be nice, but is considerabl
+                      ; e work at this stage. A nice to have if time was not a constraint.
+0000030C:             ;             
+0000030C: FB5FF06F    ;             J       ECALL_HANDLER_END     
+00000310:             ;                   
+00000310:             ; ECALL_X ; Default handler, do nothing.
+00000310: FB1FF06F    ;             J       ECALL_HANDLER_END
+00000314:             ; ; ----------------------------------------------------------------
+00000314:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000314:             ; 
+00000314:             ; 
+00000314:             ; ; _____________________________________________________________________________________________
+                      ; ____________________
+00000314:             ; ; Jump table of ECALLs                                                                         
+                      ;             | INDEX
+00000314:             ; ; _____________________________________________________________________________________________
+                      ; ____________________
+00000314: 000002D0    ; ECALL_JUMP  DEFW ECALL_0 ; Stop                                                                
+                      ;             |  00                                                                              
+                      ;   
+00000318: 00000564    ; JT_PCR      DEFW LCD_P_CHAR ; Print Char, A0: Character code                                   
+                      ;             |  01                            
+0000031C: 000004CC    ; JT_PST      DEFW LCD_P_STRING ; Print String, A0: String pointer (Must include null terminator)
+                      ;             |  02                                                            
+00000320: 000002D4    ; JT_PNM      DEFW ECALL_3 ; Print Number                                                        
+                      ;             |  03    
+00000324: 00000588    ; JT_LCL      DEFW LCD_CLEAR ; Clear Std output                                                  
+                      ;             |  04            
+00000328: 0000065C    ; JT_TRD      DEFW TIMER_READ ; Read from timer                                                  
+                      ;             |  05            
+0000032C: 0000066C    ; JT_TIN      DEFW TIMER_INIT ; Initialise timer                                                 
+                      ;             |  06            
+00000330: 0000067C    ; JT_TST      DEFW TIMER_START ; Start timer                                                     
+                      ;             |  07        
+00000334: 00000690    ; JT_TME      DEFW TIMER_MODULUS_ENABLE ; Enable modulus mode timer and set limit                
+                      ;             |  08                                                                              
+                      ;                                                                   
+00000338: 000006F8    ; JT_BRD      DEFW BUTTON_READ ; Read from button                                                
+                      ;             |  09            
+0000033C: 000006BC    ; JT_TPA      DEFW TIMER_STOP ; Stop the timer                                                   
+                      ;             |  0A           
+00000340: 000006D0    ; JT_TRC      DEFW TIMER_READ_CTRL ; read from timer control reg                                 
+                      ;             |  0B                           
+00000344: 000006E0    ; JT_TSC      DEFW TIMER_STICKY_CLEAR ; clear the timer sticky bit                               
+                      ;             |  0C                               
+00000348: 0000071C    ; JT_KRK      DEFW KP_READ_KEY ; Read keypress                                                   
+                      ;             |  0D           
+0000034C: 000002E0    ; JT_RKS      DEFW ECALL_15 ; Read keystream                                                     
+                      ;             |  0E       
+00000350: 000007E4    ; JT_BBZ      DEFW BUZZER_BUZZ ; Plays note A0, for A1 thousandths of a second (Note: A0, Duratio
+                      ; n: A1)      |  0F                                                                   
+00000354: 0000082C    ; JT_BPT      DEFW BUZZER_PLAY_TUNE ; (A0: Address of next note)                                 
+                      ;             |  10  
+00000358:             ; E_INVALID   ; Out of bounds label for auto ECALL_OOB calculation                               
+                      ;             |  11 = ECALL_OOB
+00000358:             ; ; _____________________________________________________________________________________________
+                      ; ____________________
+00000358:             ; 
+00000358:             ; ; ECALL MACROS: -------------------------
+00000358:             ; ; Automatically calculates index into table for easier maintenance
+00000358:             ; E_STOP              EQU     (ECALL_JUMP - ECALL_JUMP) /4
+00000358:             ; E_PRINT_CHAR        EQU     (JT_PCR - ECALL_JUMP) / 4 
+00000358:             ; E_PRINT_STRING      EQU     (JT_PST - ECALL_JUMP) / 4
+00000358:             ; E_PRINT_NUM         EQU     (JT_PNM - ECALL_JUMP) / 4
+00000358:             ; E_CLEAR             EQU     (JT_LCL - ECALL_JUMP) / 4
+00000358:             ; E_T_READ            EQU     (JT_TRD - ECALL_JUMP) / 4
+00000358:             ; E_T_INIT            EQU     (JT_TIN - ECALL_JUMP) / 4
+00000358:             ; E_T_START           EQU     (JT_TST - ECALL_JUMP) / 4
+00000358:             ; E_T_EN_MOD          EQU     (JT_TME - ECALL_JUMP) / 4
+00000358:             ; E_B_READ            EQU     (JT_BRD - ECALL_JUMP) / 4
+00000358:             ; E_T_STOP            EQU     (JT_TPA - ECALL_JUMP) / 4
+00000358:             ; E_T_READ_CTRL       EQU     (JT_TRC - ECALL_JUMP) / 4
+00000358:             ; E_T_CLR_STICKY      EQU     (JT_TSC - ECALL_JUMP) / 4
+00000358:             ; E_K_READ_KEY        EQU     (JT_KRK - ECALL_JUMP) / 4
+00000358:             ; E_K_READ_KEY_STREAM EQU     (JT_RKS - ECALL_JUMP) / 4
+00000358:             ; E_B_BUZZ            EQU     (JT_BBZ - ECALL_JUMP) / 4
+00000358:             ; E_B_PLAY_TUNE       EQU     (JT_BPT - ECALL_JUMP) / 4
+00000358:             ; ECALL_OOB           EQU     (E_INVALID - ECALL_JUMP) / 4      ; Out of bounds index. The greate
+                      ; st ECALL index is one less than this.
+00000358:             ; ; ---------------------------------------
+00000358:             ; 
+00000358:             ; ALIGN
+00000358:             ; INCLUDE    ../Bibliotecas/System/EXT_I_HANDLER.s    ; For handling external interrupts
+00000358:             ; ;-----------------------------------------------------
+00000358:             ; ; Library for handling external interrupts
+00000358:             ; ; R. Cruise
+00000358:             ; ; Version 1.0
+00000358:             ; ; 28 March 2025
+00000358:             ; ;
+00000358:             ; ;
+00000358:             ; ; Last modified: 09/05/25 
+00000358:             ; ;
+00000358:             ; ; Known bugs: None.
+00000358:             ; ;
+00000358:             ; ; Dependencies: UTIL.s, TIMER.s, BUTTONS.s, KEYPAD.s, BUZZER.s, LED.s
+00000358:             ; ;-----------------------------------------------------
+00000358:             ; 
+00000358:             ; 
+00000358:             ; ; INTERRUPT RELATED MACROS: -------------
+00000358:             ; INTERRUPT_REQ_O     EQU     0x08
+00000358:             ; BTN_REQ_BIT         EQU     2
+00000358:             ; INTERRUPT_EDGE_O    EQU     0x10
+00000358:             ; INTERRUPT_TMR_BIT   EQU     4
+00000358:             ; INTERRUPT_ADDR      EQU     0x0001_0400
+00000358:             ; INTERRUPT_EN_O      EQU     0x04
+00000358:             ; INTERRUPT_BTN_BIT   EQU     5
+00000358:             ; INTERRUPT_BZR_BIT   EQU     0
+00000358:             ; INTERRUPT_MODE_O    EQU     0x0C
+00000358:             ; ; ---------------------------------------
+00000358:             ; 
+00000358:             ; ; Registers are preserved when and where they are used, the only exceptions being T0, T1 and RA
+                      ;  as the user registers were already preserved in the trap handler
+00000358:             ; 
+00000358:             ; ; External (hardware) interrupt handler
+00000358:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000358:             ; EXTERNAL_I_HANDLER
+00000358:             ;             ; Preserve Registers: --------------------------------------------
+00000358:             ;             ; All registers that are used in these interrupt routines, and that could be used (
+                      ; and not expected to be preserved) subsequent function calls should be preserved.
+00000358:             ;             ; This includes all temp registers, RA, and all argument registers.
+00000358:             ;             ; This potentially could lead to preserving registers that are not used, for exampl
+                      ; e I don't think T5 is used anywhere, but the minor performance hit and tiniest of a fraction of
+                      ;  a second wasted by doing this
+00000358:             ;             ; ... amounts to no time in comparison to how long it would take me to find the sou
+                      ; rce of the bug if I was to decide to use T5 when modifying a function 5 calls deep within one o
+                      ; f the functions called in this file.
+00000358: 03C10113    ;             ADDI    SP, SP, 4*15                    ; Increment SP by 15 words
+0000035C: FC112423    ;             SW      RA, -4*14[SP]                   
+00000360: FCA12623    ;             SW      A0, -4*13[SP]
+00000364: FCB12823    ;             SW      A1, -4*12[SP]
+00000368: FCC12A23    ;             SW      A2, -4*11[SP]
+0000036C: FCD12C23    ;             SW      A3, -4*10[SP]
+00000370: FEE12A23    ;             SW      A4, -4*3[SP]
+00000374: FCF12E23    ;             SW      A5, -4*9[SP]
+00000378: FF012023    ;             SW      A6, -4*8[SP]
+0000037C: FF112223    ;             SW      A7, -4*7[SP]
+00000380: FE512423    ;             SW      T0, -4*6[SP]
+00000384: FE612623    ;             SW      T1, -4*5[SP]
+00000388: FE712823    ;             SW      T2, -4*4[SP]
+0000038C: FFC12A23    ;             SW      T3, -4*3[SP]
+00000390: FFD12C23    ;             SW      T4, -4*2[SP]
+00000394: FFE12E23    ;             SW      T5, -4*1[SP]
+00000398: 01F12023    ;             SW      T6, [SP]
+0000039C:             ;             ; ------------------------------------
+0000039C:             ; 
+0000039C:             ; 
+0000039C: 000102B7    ;             LI  T0, INTERRUPT_ADDR
+000003A0: 40028293    ; 
+000003A4: 0082A283    ;             LW  T0, INTERRUPT_REQ_O[T0]                 ; Load interrupt requests
+000003A8:             ; 
+000003A8: 0202F313    ;             ANDI T1, T0, (0b1 << INTERRUPT_BTN_BIT)
+000003AC: 04031E63    ;             BNEZ T1, BUTTON_PRESSED                     ; Was the button pressed?
+000003B0: 0102F313    ;             ANDI T1, T0, (0b1 << INTERRUPT_TMR_BIT)
+000003B4: 06031463    ;             BNEZ T1, TIMER_TICKED                       ; Has the timer ticked?
+000003B8: 0012F313    ;             ANDI T1, T0, (0b1 << INTERRUPT_BZR_BIT)
+000003BC: 0A031863    ;             BNEZ T1, BUZZER_FINISHED                    ; Has the timer ticked?
+000003C0:             ; 
+000003C0:             ; 
+000003C0:             ; ;           Space for more interrupts to be added.
+000003C0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000003C0:             ; 
+000003C0:             ; 
+000003C0:             ; ; Handler exit routine
+000003C0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000003C0:             ; EXTERNAL_I_HANDLER_EXIT 
+000003C0:             ;             ; Restore argument registers --------           
+000003C0: FC812083    ;             LW      RA, -4*14[SP]                   
+000003C4: FCC12503    ;             LW      A0, -4*13[SP]
+000003C8: FD012583    ;             LW      A1, -4*12[SP]
+000003CC: FD412603    ;             LW      A2, -4*11[SP]
+000003D0: FD812683    ;             LW      A3, -4*10[SP]
+000003D4: FF412703    ;             LW      A4, -4*3[SP]
+000003D8: FDC12783    ;             LW      A5, -4*9[SP]
+000003DC: FE012803    ;             LW      A6, -4*8[SP]
+000003E0: FE412883    ;             LW      A7, -4*7[SP]
+000003E4: FE812283    ;             LW      T0, -4*6[SP]
+000003E8: FEC12303    ;             LW      T1, -4*5[SP]
+000003EC: FF012383    ;             LW      T2, -4*4[SP]
+000003F0: FF412E03    ;             LW      T3, -4*3[SP]
+000003F4: FF812E83    ;             LW      T4, -4*2[SP]
+000003F8: FFC12F03    ;             LW      T5, -4*1[SP]
+000003FC: 00012F83    ;             LW      T6, [SP]
+00000400: FC410113    ;             SUBI    SP, SP, 4*15                    ; Increment SP by 15 words
+00000404:             ;             ; ------------------------------------
+00000404:             ; 
+00000404: E85FF06F    ;             J       TRAPPER_EXIT
+00000408:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000408:             ; 
+00000408:             ; 
+00000408:             ; ; BUTTON_PRESSED() ---------------------------------------
+00000408:             ; BUTTON_PRESSED 
+00000408:             ; 
+00000408: 000102B7    ;             LI  T0, INTERRUPT_ADDR
+0000040C: 40028293    ; 
+00000410: 02000313    ;             LI  T1, (0b1 << INTERRUPT_BTN_BIT)
+00000414: 0062A823    ;             SW  T1, INTERRUPT_EDGE_O[T0] ; Clear button sticky bit
+00000418:             ; 
+00000418: FA9FF06F    ;             J EXTERNAL_I_HANDLER_EXIT
+0000041C:             ; 
+0000041C:             ; ; --------------------------------------------------------
+0000041C:             ; 
+0000041C:             ; ; TIMER_TICKED() ---------------------------------------
+0000041C:             ; ; Interrupt routine for timer, interrupt based keypad debouncing
+0000041C:             ; ; Only capable of detecting a single keypress at a time, as this is all that is required by the
+                      ;  code that utilises this.
+0000041C:             ; ; Also, this isn't set up to allow you to try and jitter click the keys and key 1000 key presse
+                      ; s a second, again because its not necessary for this use case, and simplifies the implementatio
+                      ; n.
+0000041C:             ; TIMER_TICKED
+0000041C:             ; 
+0000041C:             ;             ; Preserve Registers: ----------------
+0000041C: 00410113    ;             ADDI    SP, SP, 4
+00000420: 00A12023    ;             SW      A0, [SP]
+00000424:             ;             ; ------------------------------------
+00000424:             ; 
+00000424: 2BC000EF    ;             JAL     TIMER_STICKY_CLEAR                  ; Clears sticky bit in timer
+00000428:             ; 
+00000428:             ;             ; The gist of this is:
+00000428:             ;             ; Check if the key (or lack thereof) read from the keypad is different from the one
+                      ;  read on the last check (0.008s ago) (LAST_READ)
+00000428:             ;             ; If its different, then consider this a change in intended state and update the LA
+                      ; ST_READ, write this value to the stream, and set the flag.
+00000428:             ;             ; If no difference, simply proceed with no changes.
+00000428:             ; 
+00000428: 2F4000EF    ;             JAL     KP_READ_KEY                 ; Reads Keypad into A0
+0000042C:             ; 
+0000042C: 02054663    ;             BLTZ    A0, CONTINUE                ; if it is -1, there was no keypress, update LA
+                      ; ST_READ and exit
+00000430:             ;             
+00000430:             ;             ; if not -1, and check last read
+00000430: 00000297    ;             LW      T0, LAST_READ               ; Get last reading
+00000434: 0982A283    ; 
+00000438:             ;             
+00000438: 02A28063    ;             BEQ     T0, A0, CONTINUE            ; if last read is the same, then this is a repe
+                      ; at read?  
+0000043C:             ;             
+0000043C:             ;             ; if last read is different, then this is a keypress
+0000043C: 00000297    ;             LW      T0, STREAM_ADDR
+00000440: 0842A283    ; 
+00000444: 00A2A023    ;             SW      A0, [T0]                    ; Store keypress to shared memory
+00000448:             ; 
+00000448: 00000297    ;             LW      T0, STREAM_F_ADDR          
+0000044C: 07C2A283    ; 
+00000450: 00100313    ;             LI      T1, 1
+00000454: 0062A023    ;             SW      T1, [T0]                    ; Set flag in shared memory
+00000458:             ; 
+00000458:             ; 
+00000458:             ; 
+00000458:             ; CONTINUE
+00000458: 00000297    ;             SW      A0, LAST_READ, T0
+0000045C: 06A2A823    ; 
+00000460:             ; 
+00000460:             ;             ; Restore Registers: ----------------
+00000460: 00012503    ;             LW      A0, [SP]
+00000464: FFC10113    ;             SUBI    SP, SP, 4            
+00000468:             ;             ; ------------------------------------
+00000468:             ; 
+00000468: F59FF06F    ;             J       EXTERNAL_I_HANDLER_EXIT
+0000046C:             ; 
+0000046C:             ; ; --------------------------------------------------------
+0000046C:             ; 
+0000046C:             ; ; BUZZER_FINISHED() --------------------------------------
+0000046C:             ; BUZZER_FINISHED ; Interrupt handler for the buzzer, triggered when the buzzer has finished play
+                      ; ing a note.
+0000046C:             ; 
+0000046C:             ;             ; Preserve Registers: ----------------
+0000046C: 00410113    ;             ADDI    SP, SP, 4
+00000470: 00A12023    ;             SW      A0, [SP]
+00000474:             ;             ; ------------------------------------
+00000474:             ;             ; Clear leds
+00000474: 00000513    ;             MV  A0, ZERO
+00000478: 454000EF    ;             JAL WRITE_TO_LEDS
+0000047C:             ; 
+0000047C: 3A0000EF    ;             JAL     BUZZER_CLEAR_INTRPT
+00000480: 00000297    ;             LW      T0, NEXT_NOTE_ADDR
+00000484: 3D82A283    ; 
+00000488: 0002C503    ;             LBU     A0, [T0]        ; Load Note
+0000048C: 0012C583    ;             LBU     A1, 1[T0]       ; Load Duration
+00000490:             ;             
+00000490:             ;             
+00000490:             ;             ; Is it finished?
+00000490: 0FF00313    ;             LI      T1, EOF
+00000494: F2A306E3    ;             BEQ     T1, A0, EXTERNAL_I_HANDLER_EXIT
+00000498:             ; 
+00000498:             ;             ; Turn on lights
+00000498: 434000EF    ;             JAL     WRITE_TO_LEDS
+0000049C:             ;             
+0000049C: 348000EF    ;             JAL     BUZZER_BUZZ
+000004A0:             ; 
+000004A0: 00000317    ;             LA      T1, NEXT_NOTE_ADDR
+000004A4: 3B830313    ; 
+000004A8: 00032283    ;             LW      T0, [T1]
+000004AC: 00228293    ;             ADDI    T0, T0, 2       ; Increase pointer
+000004B0: 00532023    ;             SW      T0, [T1]
+000004B4:             ; 
+000004B4:             ;             ; Restore Registers: ----------------
+000004B4: 00012503    ;             LW      A0, [SP]
+000004B8: FFC10113    ;             SUBI    SP, SP, 4            
+000004BC:             ;             ; ------------------------------------
+000004BC:             ; 
+000004BC: F05FF06F    ;             J EXTERNAL_I_HANDLER_EXIT
+000004C0:             ; 
+000004C0:             ; ; --------------------------------------------------------
+000004C0:             ; 
+000004C0:             ; 
+000004C0:             ; ; Keystream Variables ---------
+000004C0: 00000000    ; STREAM_ADDR         DEFW    0
+000004C4: 00000000    ; STREAM_F_ADDR       DEFW    0
+000004C8: FFFFFFFF    ; LAST_READ           DEFW   -1
+000004CC:             ; 
+000004CC:             ; 
+000004CC:             ; 
+000004CC:             ; ALIGN
+000004CC:             ; INCLUDE    ../Bibliotecas/System/LCD.s              ; For handling LCD operations
+000004CC:             ; ;-----------------------------------------------------
+000004CC:             ; ; Library for interfacing with the LCD
+000004CC:             ; ; R. Cruise
+000004CC:             ; ; Version 1.0
+000004CC:             ; ; 11 February 2025
+000004CC:             ; ;
+000004CC:             ; ; Functions:
+000004CC:             ; ; - LCD_P_STRING: For writing a string to the LCD
+000004CC:             ; ; - LCD_P_CHAR: For writing a single character to the LCD
+000004CC:             ; ; - LCD_CLEAR: For clearing the display of the LCD
+000004CC:             ; ; - LCD_P_BCD: For writing a many digit integer to the LCD
+000004CC:             ; ;
+000004CC:             ; ; The functions with names not beginning "LCD_" are for internal use within the library.
+000004CC:             ; ;
+000004CC:             ; ; Last modified: 09/05/25
+000004CC:             ; ;
+000004CC:             ; ; Known bugs: None.
+000004CC:             ; ; Dependencies: UTIL.s
+000004CC:             ; ;-----------------------------------------------------
+000004CC:             ; 
+000004CC:             ; 
+000004CC:             ; ; Useful Macros: -------------------------------------
+000004CC:             ; LCD_ADDR        EQU     0x00010100
+000004CC:             ; ;   LCD Bit Patterns: ---------------
+000004CC:             ; BACK_LIGHT      EQU     (0b1 << 11)
+000004CC:             ; ENABLE          EQU     (0b1 << 10)
+000004CC:             ; RS_DATA_nCTRL   EQU     (0b1 << 9)      ; Register select bit. Data when high, control when low
+                      ; .
+000004CC:             ; READ_nWRITE     EQU     (0b1 << 8)      ; Read / write bit. Read when high, write when low
+000004CC:             ; STATUS          EQU     (0b1 << 7)
+000004CC:             ; CLEAR           EQU     (0b1)
+000004CC:             ; ;   ---------------------------------
+000004CC:             ; ; ----------------------------------------------------
+000004CC:             ; 
+000004CC:             ; 
+000004CC:             ; ; LCD_P_STRING (A0: String Pointer)
+000004CC:             ; ; Writes a string to the LCD
+000004CC:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000004CC:             ; LCD_P_STRING
+000004CC:             ;             ; Preserve Registers: --------------------------------------------
+000004CC: 00C10113    ;             ADDI    SP, SP, 12                  ; Increment SP by 3 words
+000004D0: FE112C23    ;             SW      RA, -8[SP]                  ; Return Address
+000004D4: FEA12E23    ;             SW      A0, -4[SP]                  ; A0: Argument containing address of string
+000004D8: 00812023    ;             SW      S0, [SP]                    ; S0: Pointer to the current character in the s
+                      ; tring
+000004DC:             ;             ; ----------------------------------------------------------------
+000004DC: 00050413    ;             MV      S0, A0                      ; Load string pointer into S0
+000004E0: 00C0006F    ;             J       P_ENTRY
+000004E4:             ; 
+000004E4: 080000EF    ; P_LOOP      JAL     LCD_P_CHAR                  ; Call print char function with argument in A0
+000004E8: 00140413    ;             ADDI    S0, S0, 1                   ; Increment pointer to point at next character
+000004EC:             ; ; While loop entry point           
+000004EC: 00040503    ; P_ENTRY     LB      A0, [S0]                    ; Load character into A0 (to be passed as an ar
+                      ; gument)
+000004F0: FE051AE3    ;             BNEZ    A0, P_LOOP
+000004F4:             ; 
+000004F4:             ;             ; Restore Registers: --------------------------------------------
+000004F4: 00012403    ;             LW      S0, [SP]
+000004F8: FFC12503    ;             LW      A0, -4[SP]
+000004FC: FF812083    ;             LW      RA, -8[SP]
+00000500: FF410113    ;             SUBI    SP, SP, 12
+00000504:             ;             ; ----------------------------------------------------------------
+00000504:             ; 
+00000504: 00008067    ;             RET
+00000508:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -          
+00000508:             ; 
+00000508:             ; ; LCD_P_BCD (A0: BCD Value)
+00000508:             ; ; Writes a string of numbers to the LCD
+00000508:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000508:             ; LCD_P_BCD
+00000508:             ;             ; Preserve Registers: --------------------------------------------
+00000508: 01410113    ;             ADDI    SP, SP, 20                  ; Increment SP by 3 words
+0000050C: FE112823    ;             SW      RA, -16[SP]                 ; Return Address
+00000510: FEA12A23    ;             SW      A0, -12[SP]                 ; A0: Argument containing BCD value
+00000514: FE812C23    ;             SW      S0, -8[SP]                  ; S0: Start index of the nibble
+00000518: FE912E23    ;             SW      S1, -4[SP]                  ; S1: Nibble mask
+0000051C: 01212023    ;             SW      S2, [SP]                    ; S2: Copy of A0, because it gets overwritten t
+                      ; o pass arg to P_CHAR
+00000520:             ;             ; ----------------------------------------------------------------
+00000520:             ; 
+00000520: 00050913    ;             MV      S2, A0                      ; Copy BCD value to S2
+00000524: 01C00413    ;             LI      S0, 28                      ; Start index of nibble, will go 28,24,20,16,..
+                      ; .
+00000528: 00F00493    ;             LI      S1, 0xF                     ; Nibble mask
+0000052C:             ; 
+0000052C:             ; P_BCD_LOOP  ; Done this way, rather than with a fixed mask and shifting BCD value, because I ne
+                      ; ed to work from the left side of the bcd value to the right, so either way there is two shifts.
+0000052C: 008492B3    ;             SLL     T0, S1, S0                  ; Shift mask by index --> T0
+00000530: 005972B3    ;             AND     T0, S2, T0                  ; Apply mask to BCD to leave single digit. --> 
+                      ; T0
+00000534: 0082D533    ;             SRL     A0, T0, S0                  ; Apply shift in reverse to fix place value
+00000538:             ; 
+00000538: 03050513    ;             ADDI    A0, A0, 48                  ; Convert to ASCII
+0000053C: 028000EF    ;             JAL     LCD_P_CHAR                  ; Call print char function with argument in A0
+00000540:             ; 
+00000540: FFC40413    ;             SUBI    S0, S0, 4                   ; Increment index by length of a nibble
+00000544:             ; 
+00000544: FE0454E3    ;             BGEZ    S0, P_BCD_LOOP              ; Index below zero? Stop.
+00000548:             ; 
+00000548:             ;             ; Restore Registers: --------------------------------------------
+00000548: 00012903    ;             LW      S2, [SP]
+0000054C: FFC12483    ;             LW      S1, -4[SP]
+00000550: FF812403    ;             LW      S0, -8[SP]
+00000554: FF412503    ;             LW      A0, -12[SP]
+00000558: FF012083    ;             LW      RA, -16[SP]
+0000055C: FEC10113    ;             SUBI    SP, SP, 20
+00000560:             ;             ; ----------------------------------------------------------------
+00000560:             ; 
+00000560: 00008067    ;             RET
+00000564:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -   
+00000564:             ; 
+00000564:             ; ; LCD_P_CHAR (A0: ASCII character code)
+00000564:             ; ; Writes a character to the LCD
+00000564:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000564:             ; LCD_P_CHAR
+00000564:             ;             ; Preserve Registers: --------------------------------------------
+00000564: 00810113    ;             ADDI    SP, SP, 8                   ; Increment SP by 2 words
+00000568: FE112E23    ;             SW      RA, -4[SP]                  ; Return Address
+0000056C: 00A12023    ;             SW      A0, [SP]                    ; A0: ASCII character code to be printed, then 
+                      ; used to pass argument to delay function.
+00000570:             ;             ; ----------------------------------------------------------------
+00000570:             ; 
+00000570:             ;             ; Write to Data Register the data in A0
+00000570: 20000593    ;             LI      A1, RS_DATA_nCTRL           ; Specify the data register
+00000574: 03C000EF    ;             JAL     WRITE_TO_REG                ; Takes arguments A0 and A1 (Data, Register)
+00000578:             ; 
+00000578:             ;             ; Restore Registers: --------------------------------------------
+00000578: 00012503    ;             LW      A0, [SP]
+0000057C: FFC12083    ;             LW      RA, -4[SP]
+00000580: FF810113    ;             SUBI    SP, SP, 8
+00000584:             ;             ; ----------------------------------------------------------------
+00000584:             ;             
+00000584: 00008067    ;             RET
+00000588:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -             
+00000588:             ; 
+00000588:             ; 
+00000588:             ; ; LCD_CLEAR ()
+00000588:             ; ; Clears the LCD which resets cursor position to 0
+00000588:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000588:             ; LCD_CLEAR
+00000588:             ;             ; Preserve Registers: --------------------------------------------
+00000588: 00810113    ;             ADDI    SP, SP, 8                   ; Increment SP by 2 words
+0000058C: FE112E23    ;             SW      RA, -4[SP]                  ; Return Address
+00000590: 00A12023    ;             SW      A0, [SP]                    ; A0: Used to contain LCD clear bit pattern
+00000594:             ;             ; ----------------------------------------------------------------
+00000594:             ; 
+00000594:             ;             ; Write to Data Register the data in A0
+00000594: 00100513    ;             LI      A0, CLEAR                   ; Specify the bit pattern to clear
+00000598: 00000593    ;             LI      A1, 0                       ; Specify the control register
+0000059C: 014000EF    ;             JAL     WRITE_TO_REG                ; Takes arguments A0 and A1 (Data, Register)
+000005A0:             ; 
+000005A0:             ;             ; Restore Registers: --------------------------------------------
+000005A0: 00012503    ;             LW      A0, [SP]
+000005A4: FFC12083    ;             LW      RA, -4[SP]
+000005A8: FF810113    ;             SUBI    SP, SP, 8
+000005AC:             ;             ; ----------------------------------------------------------------
+000005AC:             ;             
+000005AC: 00008067    ;             RET
+000005B0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -             
+000005B0:             ; 
+000005B0:             ; 
+000005B0:             ; ; WRITE_TO_REG (A0: pattern to write to register, A1: Register Select (Data/¬Control))
+000005B0:             ; ; Writes to either the data or control register on the LCD. This is an internal function, only 
+                      ; used within this file
+000005B0:             ; ; Note: assumes A1 has the entire bit pattern for the reg select bit e.g. 0001000... not just a
+                      ;  boolean.
+000005B0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000005B0:             ; WRITE_TO_REG
+000005B0:             ;             ; Preserve Registers: --------------------------------------------
+000005B0: 01810113    ;             ADDI    SP, SP, 4*6                 ; Increment SP by 6 words
+000005B4: FE112623    ;             SW      RA, -4*5[SP]                ; Return Address
+000005B8: FEA12823    ;             SW      A0, -4*4[SP]                ; A0: ASCII character code to be printed, then 
+                      ; used to pass argument to delay function.
+000005BC: FE812A23    ;             SW      S0, -4*3[SP]                ; S0: Data to be written to LCD register
+000005C0: FE912C23    ;             SW      S1, -4*2[SP]                ; S1: LCD address
+000005C4: FF212E23    ;             SW      S2, -4*1[SP]    
+000005C8: 01312023    ;             SW      S3, [SP]                    ; S3: ASCII character code to be printed
+000005CC:             ;             ; ----------------------------------------------------------------
+000005CC:             ; 
+000005CC: 000104B7    ;             LI      S1, LCD_ADDR                ; S1 = LCD address
+000005D0: 10048493    ; 
+000005D4: 00050993    ;             MV      S3, A0                      ; Save A0 so is not overwritten for delay calls
+                      ; .
+000005D8:             ;             
+000005D8:             ;             ; Repeatedly polls the LCD until it is found to be idle and no longer busy.
+000005D8:             ;             ; ----------------------------------
+000005D8: 00001437    ;             LI      S0, BACK_LIGHT              ; 0 out all bits, turn on backlight
+000005DC: 80040413    ; 
+000005E0:             ;             
+000005E0: 10046413    ;             ORI     S0, S0, READ_nWRITE         ; Set bit 8 (Read/¬Write) to 1 (control is alr
+                      ; eady 0)
+000005E4:             ; 
+000005E4:             ; LOOP_WB     ; Polling loop
+000005E4:             ; 
+000005E4: 40046413    ;             ORI     S0, S0, ENABLE              ; Set bit 10 (enable to 1)
+000005E8: 0084A023    ;             SW      S0, [S1]                    ; Write to LCD
+000005EC:             ; 
+000005EC: 01400513    ;             LI      A0, 20                      ; Enable pulse width
+000005F0: 26C000EF    ;             JAL     DELAY
+000005F4:             ; 
+000005F4: 0004A903    ;             LW      S2, [S1]                    ; read from LCD to S2
+000005F8:             ; 
+000005F8: BFF47413    ;             ANDI    S0, S0, ~(ENABLE)           ; mask to clear bit 10 (set enable to 0)
+000005FC: 0084A023    ;             SW      S0, [S1]                    ; Write to LCD
+00000600:             ; 
+00000600: 08097913    ;             ANDI    S2, S2, STATUS              ; Mask to get bit 7 (status bit)
+00000604:             ; 
+00000604: 03000513    ;             LI      A0, 48                      ; Enable pulse spacing
+00000608: 254000EF    ;             JAL     DELAY
+0000060C:             ;             
+0000060C: FC091CE3    ;             BNEZ S2, LOOP_WB                    ; If status bit is 1, then LCD is busy, poll ag
+                      ; ain.
+00000610:             ;             ; ----------------------------------
+00000610:             ; 
+00000610:             ; 
+00000610: 00001437    ;             LI      S0, BACK_LIGHT              ; 0 out all bits, turn on backlight
+00000614: 80040413    ; 
+00000618:             ; 
+00000618: 00B46433    ;             OR      S0, S0, A1                  ; Sets the register select bit, Read/¬Write bi
+                      ; t is already set to 0 for Write
+0000061C:             ; 
+0000061C: 0FF9F993    ;             ANDI    S3, S3, 0xFF                ; Bit mask to discard bits excluding 0-7 to pre
+                      ; vent mischief
+00000620: 01346433    ;             OR      S0, S0, S3                  ; Sets the data bits
+00000624:             ;            
+00000624: 40046413    ;             ORI     S0, S0, ENABLE              ; Set enable to high
+00000628: 0084A023    ;             SW      S0, [S1]                    ; Write bit pattern to LCD
+0000062C:             ; 
+0000062C: 01400513    ;             LI      A0, 20                      ; Enable pulse width
+00000630: 22C000EF    ;             JAL     DELAY
+00000634:             ; 
+00000634: BFF47413    ;             ANDI    S0, S0, ~(ENABLE)           ; Set enable to low
+00000638: 0084A023    ;             SW      S0, [S1]                    ; Write bit pattern to LCD
+0000063C:             ; 
+0000063C:             ;             ; Restore Registers: --------------------------------------------
+0000063C: FEC12083    ;             LW      RA, -4*5[SP]                
+00000640: FF012503    ;             LW      A0, -4*4[SP]                
+00000644: FF412403    ;             LW      S0, -4*3[SP]                
+00000648: FF812483    ;             LW      S1, -4*2[SP]                
+0000064C: FFC12903    ;             LW      S2, -4*1[SP]    
+00000650: 00012983    ;             LW      S3, [SP]                    
+00000654: FE810113    ;             SUBI    SP, SP, 4*6                 ; Decrement SP by 6 words
+00000658:             ;             ; ----------------------------------------------------------------
+00000658:             ;             
+00000658: 00008067    ;             RET
+0000065C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -            
+0000065C:             ; 
+0000065C:             ; 
+0000065C:             ; ALIGN
+0000065C:             ; INCLUDE    ../Bibliotecas/System/TIMER.s            ; For interfacing with the timer
+0000065C:             ; ;-----------------------------------------------------
+0000065C:             ; ; Library for interfacing with the Timer
+0000065C:             ; ; R. Cruise
+0000065C:             ; ; Version 1.0
+0000065C:             ; ; 28 February 2025
+0000065C:             ; ;
+0000065C:             ; ; This library contains some useful functions for the Timer
+0000065C:             ; ; Including:
+0000065C:             ; ; - TIMER_READ
+0000065C:             ; ; - TIMER_START
+0000065C:             ; ; - TIMER_MODULUS_ENABLE
+0000065C:             ; ; - TIMER_STOP
+0000065C:             ; ; - TIMER_READ_CTRL
+0000065C:             ; ; - TIMER_STICKY_CLEAR
+0000065C:             ; ;
+0000065C:             ; ;
+0000065C:             ; ; Last modified: 09/05/25
+0000065C:             ; ;
+0000065C:             ; ; Known bugs: None.
+0000065C:             ; ; Dependencies: None.
+0000065C:             ; ;-----------------------------------------------------
+0000065C:             ; 
+0000065C:             ; ; Useful Macros: -------------------------------------
+0000065C:             ; TIMER_ADDR          EQU     0x0001_0200
+0000065C:             ; ;   Offsets
+0000065C:             ; MODULUS_O           EQU     0x04
+0000065C:             ; CONTROL_REG_O       EQU     0x0C
+0000065C:             ; CONTROL_SET_O       EQU     0x14
+0000065C:             ; CONTROL_CL_O        EQU     0x10
+0000065C:             ; ;   Bit positions
+0000065C:             ; ENABLE_BIT          EQU     0
+0000065C:             ; MODULUS_BIT         EQU     1
+0000065C:             ; STICKY_BIT          EQU     31
+0000065C:             ; INTERRUPT_BIT       EQU     3
+0000065C:             ; 
+0000065C:             ; ; ----------------------------------------------------
+0000065C:             ; 
+0000065C:             ; 
+0000065C:             ; ; TIMER_READ ()
+0000065C:             ; ; Read data from Timer, returns value in A0
+0000065C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000065C:             ; TIMER_READ
+0000065C: 000102B7    ;             LI      T0, TIMER_ADDR
+00000660: 20028293    ; 
+00000664: 0002A503    ;             LW      A0, [T0]
+00000668:             ; 
+00000668: 00008067    ;             RET
+0000066C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+0000066C:             ; 
+0000066C:             ; 
+0000066C:             ; ; TIMER_INIT ()
+0000066C:             ; ; Initialises the timer by zeroing out control register. (Will clear any interrupts, and stop t
+                      ; imer.)
+0000066C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000066C:             ; TIMER_INIT
+0000066C: 000102B7    ;             LI      T0, TIMER_ADDR
+00000670: 20028293    ; 
+00000674: 0002A623    ;             SW      ZERO, CONTROL_REG_O[T0]
+00000678:             ;             ; Doesn't initialise modulus register because what value would it make sense to def
+                      ; ault to?
+00000678:             ;             ; Clearing the control reg disables modulus counting anyway, limit should be define
+                      ; d when modulus is enabled.
+00000678: 00008067    ;             RET
+0000067C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+0000067C:             ; 
+0000067C:             ; 
+0000067C:             ; ; TIMER_START ()
+0000067C:             ; ; Starts the timer by setting control register enable bit to 1
+0000067C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000067C:             ; TIMER_START
+0000067C: 000102B7    ;             LI      T0, TIMER_ADDR
+00000680: 20028293    ; 
+00000684: 00100313    ;             LI      T1, (0b1 << ENABLE_BIT)
+00000688: 0062AA23    ;             SW      T1, CONTROL_SET_O[T0]
+0000068C:             ; 
+0000068C: 00008067    ;             RET
+00000690:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+00000690:             ; 
+00000690:             ; ; TIMER_MODULUS_ENABLE (A0: Limit (modulus -1)) (And Limit set)
+00000690:             ; ; Sets timer to use modulus mode by setting control register modulus bit to 1, and sets the lim
+                      ; it
+00000690:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000690:             ; TIMER_MODULUS_ENABLE      
+00000690: 000102B7    ;             LI      T0, TIMER_ADDR              ; Set limit
+00000694: 20028293    ; 
+00000698: 00A2A223    ;             SW      A0, MODULUS_O[T0]
+0000069C:             ; 
+0000069C: 00200313    ;             LI      T1, (0b1 << MODULUS_BIT)    ; Enable modulus
+000006A0: 0062AA23    ;             SW      T1, CONTROL_SET_O[T0]
+000006A4:             ; 
+000006A4: 00008067    ;             RET
+000006A8:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+000006A8:             ; 
+000006A8:             ; ; TIMER_INTERRUPT_ENABLE ()
+000006A8:             ; ; Sets timer to interrupt by setting control register interrupt bit to 1
+000006A8:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000006A8:             ; TIMER_INTERRUPT_ENABLE
+000006A8: 000102B7    ;             LI      T0, TIMER_ADDR
+000006AC: 20028293    ; 
+000006B0: 00800313    ;             LI      T1, (0b1 << INTERRUPT_BIT)
+000006B4: 0062AA23    ;             SW      T1, CONTROL_SET_O[T0]
+000006B8:             ; 
+000006B8: 00008067    ;             RET
+000006BC:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -        
+000006BC:             ; 
+000006BC:             ; ; TIMER_STOP ()
+000006BC:             ; ; Stops the timer by setting control register enable bit to 1
+000006BC:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000006BC:             ; TIMER_STOP
+000006BC: 000102B7    ;             LI      T0, TIMER_ADDR
+000006C0: 20028293    ; 
+000006C4: 00100313    ;             LI      T1, (0b1 << ENABLE_BIT)
+000006C8: 0062A823    ;             SW      T1, CONTROL_CL_O[T0]
+000006CC:             ; 
+000006CC: 00008067    ;             RET
+000006D0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -   
+000006D0:             ; 
+000006D0:             ; ; TIMER_READ_CTRL ()
+000006D0:             ; ; Read data from timer control register
+000006D0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000006D0:             ; TIMER_READ_CTRL
+000006D0: 000102B7    ;             LI      T0, TIMER_ADDR
+000006D4: 20028293    ; 
+000006D8: 00C2A503    ;             LW      A0, CONTROL_REG_O[T0]
+000006DC:             ; 
+000006DC: 00008067    ;             RET
+000006E0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+000006E0:             ; 
+000006E0:             ; ; TIMER_STICKY_CLEAR ()
+000006E0:             ; ; Clears the sticky bit on the timer using the clear register
+000006E0:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000006E0:             ; TIMER_STICKY_CLEAR
+000006E0: 000102B7    ;             LI      T0, TIMER_ADDR
+000006E4: 20028293    ; 
+000006E8: 80000337    ;             LI      T1, (0b1 << STICKY_BIT)
+000006EC: 00030313    ; 
+000006F0: 0062A823    ;             SW      T1, CONTROL_CL_O[T0]
+000006F4:             ; 
+000006F4: 00008067    ;             RET
+000006F8:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -   
+000006F8:             ; ALIGN
+000006F8:             ; INCLUDE    ../Bibliotecas/System/BUTTONS.s          ; For interfacing with the buttons
+000006F8:             ; ;-----------------------------------------------------
+000006F8:             ; ; Library for interfacing with the Button
+000006F8:             ; ; R. Cruise
+000006F8:             ; ; Version 1.0
+000006F8:             ; ; 28 February 2025
+000006F8:             ; ;
+000006F8:             ; ; Functions:
+000006F8:             ; ; - BUTTON_READ
+000006F8:             ; ;
+000006F8:             ; ; The functions with names not beginning "BUTTON_" are for internal use within the library.
+000006F8:             ; ;
+000006F8:             ; ; Last modified: 09/05/25 
+000006F8:             ; ;
+000006F8:             ; ; Known bugs: None.
+000006F8:             ; ; Dependencies: None.
+000006F8:             ; ;-----------------------------------------------------
+000006F8:             ; 
+000006F8:             ; ; Useful Macros: -------------------------------------
+000006F8:             ; BUTTON_ADDR          EQU     0x0001_0001
+000006F8:             ; ; ----------------------------------------------------
+000006F8:             ; 
+000006F8:             ; 
+000006F8:             ; ; BUTTON_READ ()
+000006F8:             ; ; Reads data from button map returns the value read in A0: ()...._ 1111 means all the buttons a
+                      ; re pressed etc)
+000006F8:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000006F8:             ; BUTTON_READ
+000006F8:             ; 
+000006F8: 00010537    ;             LI      A0, BUTTON_ADDR
+000006FC: 00150513    ; 
+00000700: 00054503    ;             LBU     A0, [A0]
+00000704:             ; 
+00000704: 00008067    ;             RET
+00000708:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+00000708:             ; 
+00000708:             ; 
+00000708:             ; ALIGN
+00000708:             ; INCLUDE    ../Bibliotecas/System/KEYPAD.s           ; For interfacing with the keypad
+00000708:             ; ;-----------------------------------------------------
+00000708:             ; ; Library for interfacing the keypad when placed in the LEFT expansion slot
+00000708:             ; ; R. Cruise
+00000708:             ; ; Version 1.0
+00000708:             ; ; 14 March 2025 (PI day, wooo)
+00000708:             ; ;
+00000708:             ; ; Functions:
+00000708:             ; ; - KP_READ_KEY
+00000708:             ; ;
+00000708:             ; ; Last modified: 09/05/25 
+00000708:             ; ;
+00000708:             ; ; Known bugs: None.
+00000708:             ; ; Dependencies: None.
+00000708:             ; ;-----------------------------------------------------
+00000708:             ; 
+00000708:             ; ; Useful Macros: -------------------------------------
+00000708:             ; KEYPAD_ADDR         EQU     0x0001_0300
+00000708:             ; KP_DIRECTION_O      EQU     0x04
+00000708:             ; KP_CLEAR_O          EQU     0x08
+00000708:             ; KP_SET_O            EQU     0x0C
+00000708:             ; KP_DIRECTION_PTN    EQU     0xFFFF_F8FF
+00000708:             ; KP_INPUT_MSK        EQU     0x0000_F000
+00000708:             ; SCAN_DELAY          EQU     10
+00000708:             ; ; ----------------------------------------------------
+00000708:             ; 
+00000708:             ; ; KP_INIT ()
+00000708:             ; ; Initialises the keypad ready to be read from by setting pin directions
+00000708:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000708:             ; KP_INIT
+00000708:             ;             ; Set directions, for pins
+00000708: 00010337    ;             LI      T1, KEYPAD_ADDR
+0000070C: 30030313    ; 
+00000710: 8FF00293    ;             LI      T0, KP_DIRECTION_PTN
+00000714: 00532223    ;             SW      T0, KP_DIRECTION_O[T1]
+00000718:             ; 
+00000718: 00008067    ;             RET
+0000071C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000071C:             ; 
+0000071C:             ; ; KP_READ_KEY ()
+0000071C:             ; ; Checks to see if any key has been pressed. Returns value in A0, is -1 if no press
+0000071C:             ; ; Only capable of detecting a single key press at a time, by design. My user code only needs a 
+                      ; single key at a time.
+0000071C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000071C:             ; KP_READ_KEY
+0000071C:             ; 
+0000071C:             ;             ; Preserve Registers: --------------------------------------------
+0000071C: 01810113    ;             ADDI    SP, SP, 4*6                     ; Increment SP by 6 words  
+00000720: FF412623    ;             SW      S4, -4*5[SP]          
+00000724: FE812823    ;             SW      S0, -4*4[SP]
+00000728: FE912A23    ;             SW      S1, -4*3[SP]
+0000072C: FF212C23    ;             SW      S2, -4*2[SP]
+00000730: FF312E23    ;             SW      S3, -4*1[SP]
+00000734: 00112023    ;             SW      RA, [SP]                        ; Return Address
+00000738:             ;             ; ----------------------------------------------------------------
+00000738:             ; 
+00000738:             ;             ; Reading from keyboard
+00000738:             ;             ; Set the following in direction
+00000738:             ;             ; - key lanes (output): 8,9,10
+00000738:             ;             ; - input: 12, 13, 14, 15 (set all remaining to input also)
+00000738:             ;             ; one at a time, set the bit for the each key lane, read bits 12-15, then clear it 
+                      ; and move onto next lane
+00000738:             ; 
+00000738:             ;             ; S0: Keypad address, S1: working space, S2: Mask, S3: Column of keypress
+00000738: 00010437    ;             LI      S0, KEYPAD_ADDR
+0000073C: 30040413    ; 
+00000740: 0000F937    ;             LI      S2, KP_INPUT_MSK
+00000744: 00090913    ; 
+00000748:             ; 
+00000748:             ;             ; Clear all data bits
+00000748: FFF00493    ;             LI      S1, -1
+0000074C: 00942423    ;             SW      S1, KP_CLEAR_O[S0]
+00000750:             ; 
+00000750: 10000A13    ;             LI      S4, (0b1 << 8)               ; First lane bit mask
+00000754: 00000993    ;             LI      S3, 0                        ; First lane column no.
+00000758:             ;             ; Could derive one from the other and save a register, but that involves some manip
+                      ; ulation, which results in more instructions than preserving and extra register
+00000758:             ; 
+00000758:             ; SCAN_LOOP           
+00000758:             ;             ; Write to key lane -------
+00000758:             ;             ;LI      S1, (0b1 << 8)
+00000758: 01442623    ;             SW      S4, KP_SET_O[S0]
+0000075C:             ;             
+0000075C:             ;             ; Allows for propagation delay
+0000075C: 00A00513    ;             LI      A0, SCAN_DELAY              
+00000760: 0FC000EF    ;             JAL     DELAY
+00000764:             ; 
+00000764:             ;             ; Read data into S1
+00000764: 00042483    ;             LW      S1, [S0]
+00000768:             ; 
+00000768:             ;             ; Mask input to get only matrix input bits
+00000768: 0124F4B3    ;             AND     S1, S1, S2
+0000076C:             ; 
+0000076C: 02049063    ;             BNEZ    S1, KEY_PRESSED
+00000770:             ; 
+00000770:             ;             ; Clear data written to lane 1
+00000770:             ;             ;LI      S1, (0b1 << 8)
+00000770: 01442423    ;             SW      S4, KP_CLEAR_O[S0]
+00000774:             ;             ; ---------------------------
+00000774:             ; 
+00000774: 001A1A13    ;             SLLI    S4, S4, 1                   ; Shift so mask is ready for next lane
+00000778: 00198993    ;             ADDI    S3, S3, 1                   ; Increment Column number
+0000077C: 00300493    ;             LI      S1, 3         
+00000780: FC99ECE3    ;             BLTU    S3, S1, SCAN_LOOP
+00000784:             ;             
+00000784:             ;             ; No key pressed
+00000784: FFF00513    ;             LI      A0, -1
+00000788: 0300006F    ;             J       READ_KEY_END
+0000078C:             ; 
+0000078C:             ; KEY_PRESSED ; Label to be jumped to if keypress is detected, works out what the key is and retu
+                      ; rns. S3: column, S1: 2^row (0001,0010,0100,1000)
+0000078C:             ; 
+0000078C:             ;             ; First, identify index of set bit in S1
+0000078C: 00F49413    ;             SLLI    S0, S1, 15  ; Shift bits to be one off the msb i.e 0ABCD 0000 ... where abc
+                      ; d are the bits of interest
+00000790: 00400493    ;             LI      S1, 4       ; Index of set bit / row
+00000794:             ; 
+00000794:             ; LOG_2_LP    
+00000794: 00141413    ;             SLLI    S0, S0, 1           ; Move next bit into the sign bit position
+00000798: FFF48493    ;             SUBI    S1, S1, 1           ; Decrement index
+0000079C: FE804CE3    ;             BGTZ    S0, LOG_2_LP        ; Check if sign bit is set, if not, keep looping
+000007A0:             ; 
+000007A0:             ;             ; Use keypad map to return pressed key S1: row
+000007A0: 00000417    ;             LA S0, KEYPAD_MAP
+000007A4: 03840413    ; 
+000007A8:             ; 
+000007A8: 00299993    ;             SLLI    S3, S3, 2   ; S3 = index of start of column
+000007AC: 01340433    ;             ADD     S0, S0, S3  ; S0 = address of start of column
+000007B0: 00940433    ;             ADD     S0, S0, S1  ; S0 = address of start of byte
+000007B4:             ; 
+000007B4: 00044503    ;             LBU     A0, [S0]    ; Fingers cross, should load relevant byte from table. God will
+                      ; ing.
+000007B8:             ; 
+000007B8:             ; READ_KEY_END
+000007B8:             ;             ; Restore Registers: --------------------------------------------           
+000007B8: FEC12A03    ;             LW      S4, -4*5[SP]
+000007BC: FF012403    ;             LW      S0, -4*4[SP]
+000007C0: FF412483    ;             LW      S1, -4*3[SP]
+000007C4: FF812903    ;             LW      S2, -4*2[SP]
+000007C8: FFC12983    ;             LW      S3, -4*1[SP]
+000007CC: 00012083    ;             LW      RA, [SP]                     ; Return Address                            
+000007D0: FE810113    ;             SUBI    SP, SP, 4*6                  ; Decrement SP by 6 words
+000007D4:             ;             ; ----------------------------------------------------------------
+000007D4: 00008067    ;             RET
+000007D8:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+000007D8:             ; 
+000007D8:             ;             ; Col 0
+000007D8: 2A          ; KEYPAD_MAP  DEFB '*'
+000007D9: 07          ;             DEFB 7
+000007DA: 04          ;             DEFB 4
+000007DB: 01          ;             DEFB 1
+000007DC:             ;             ; Col 1
+000007DC: 00          ;             DEFB 0
+000007DD: 08          ;             DEFB 8
+000007DE: 05          ;             DEFB 5
+000007DF: 02          ;             DEFB 2                    
+000007E0:             ;             ; Col 2
+000007E0: 23          ;             DEFB '#'
+000007E1: 09          ;             DEFB 9
+000007E2: 06          ;             DEFB 6
+000007E3: 03          ;             DEFB 3          
+000007E4:             ; ALIGN
+000007E4:             ; INCLUDE    ../Bibliotecas/System/BUZZER.s           ; For interfacing with the buzzer
+000007E4:             ; ;-----------------------------------------------------
+000007E4:             ; ; Library for interfacing with the Buzzer via my controller
+000007E4:             ; ; R. Cruise
+000007E4:             ; ; Version 1.0
+000007E4:             ; ; 30 April 2025
+000007E4:             ; ;
+000007E4:             ; ; Functions:
+000007E4:             ; ; - BUZZER_BUZZ
+000007E4:             ; ; - BUZZER_INIT
+000007E4:             ; ; - BUZZER_CLEAR_INTRPT
+000007E4:             ; ; - BUZZER_PLAY_TUNE
+000007E4:             ; ;
+000007E4:             ; ; The functions with names not beginning BUZZER_" are for internal use within the library.
+000007E4:             ; ;
+000007E4:             ; ; Last modified: 09/05/25 
+000007E4:             ; ;
+000007E4:             ; ; Known bugs: None.
+000007E4:             ; ; Dependencies: None.
+000007E4:             ; ;-----------------------------------------------------
+000007E4:             ; 
+000007E4:             ; ; Useful Macros: -------------------------------------
+000007E4:             ; BUZZER_ADDR             EQU     0x0002_0000
+000007E4:             ; BUZZER_INTRPT_CLR_O     EQU     0x04
+000007E4:             ; BUZZER_CONFIG_ADDR      EQU     0x0001_0708
+000007E4:             ; BUZZER_CONFIG_PTN       EQU     0xC0
+000007E4:             ; ; ----------------------------------------------------
+000007E4:             ; 
+000007E4:             ; 
+000007E4:             ; ; BUZZER_BUZZ (Note: A0, Duration: A1)
+000007E4:             ; ; Plays note A0, for A1 thousandths of a second
+000007E4:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000007E4:             ; BUZZER_BUZZ 
+000007E4:             ;             ;     432 1098 7654 3210
+000007E4:             ;             ;..._.NNN_NNDD_DDDD_DDDD
+000007E4:             ; 
+000007E4: 00A51293    ;             SLLI    T0, A0, 10 
+000007E8: 00B2E2B3    ;             OR      T0, T0, A1
+000007EC: 00020337    ;             LI      T1, BUZZER_ADDR
+000007F0: 00030313    ; 
+000007F4: 00532023    ;             SW      T0, [T1] 
+000007F8:             ; 
+000007F8: 00008067    ;             RET
+000007FC:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+000007FC:             ; 
+000007FC:             ; ; BUZZER_INIT()
+000007FC:             ; ; Configures the buzzer to be controlled by the user expansion module, clears interrupt
+000007FC:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000007FC:             ; BUZZER_INIT 
+000007FC:             ;             ; Set buzzer control to user expansion
+000007FC: 000102B7    ;             LI      T0, BUZZER_CONFIG_ADDR
+00000800: 70828293    ; 
+00000804: 0C000313    ;             LI      T1, BUZZER_CONFIG_PTN
+00000808: 0062A023    ;             SW      T1, [T0]
+0000080C:             ; 
+0000080C:             ;             ; Clear interrupt    
+0000080C: 000202B7    ;             LI      T0, BUZZER_ADDR
+00000810: 00028293    ; 
+00000814: 0002A223    ;             SW      ZERO, BUZZER_INTRPT_CLR_O[T0]  
+00000818:             ; 
+00000818: 00008067    ;             RET
+0000081C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+0000081C:             ; 
+0000081C:             ; ; BUZZER_CLEAR_INTRPT()
+0000081C:             ; ; Clears interrupt from buzzer
+0000081C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000081C:             ; BUZZER_CLEAR_INTRPT
+0000081C:             ;             ; Clear interrupt    
+0000081C: 000202B7    ;             LI      T0, BUZZER_ADDR
+00000820: 00028293    ; 
+00000824: 0002A223    ;             SW      ZERO, BUZZER_INTRPT_CLR_O[T0]  
+00000828:             ; 
+00000828: 00008067    ;             RET
+0000082C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+0000082C:             ; 
+0000082C:             ; ; BUZZER_PLAY_TUNE(A0: Address of next note)
+0000082C:             ; ; Stores the address of next note, then plays an empty note, when this ends it will trigger the
+                      ;  interrupts handler, which will play the remaining notes.
+0000082C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+0000082C:             ; BUZZER_PLAY_TUNE
+0000082C: 00410113    ;             ADDI    SP, SP, 4
+00000830: 00112023    ;             SW      RA, [SP]                    
+00000834:             ; 
+00000834: 00000317    ;             LA      T1, NEXT_NOTE_ADDR
+00000838: 02430313    ; 
+0000083C: 00A32023    ;             SW      A0, [T1]
+00000840:             ; 
+00000840: 0FE00513    ;             LI      A0, REST
+00000844: 00100593    ;             LI      A1, 1
+00000848: F9DFF0EF    ;             JAL     BUZZER_BUZZ
+0000084C:             ; 
+0000084C: 00012083    ;             LW      RA, [SP] 
+00000850: FFC10113    ;             SUBI    SP, SP, 4
+00000854:             ; 
+00000854: 00008067    ;             RET
+00000858:             ;              
+00000858:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00000858:             ; 
+00000858:             ; 
+00000858:             ; ; Buzzer Variables
+00000858: 00000000    ; NEXT_NOTE_ADDR      DEFW    0
+0000085C:             ; 
+0000085C:             ; ; NOTES: ------------------
+0000085C:             ; C_HIGH          EQU     0x00    
+0000085C:             ; B_HIGH          EQU     0x01    
+0000085C:             ; Bb_HIGH             EQU     0x02        
+0000085C:             ; A_HIGH              EQU     0x03        
+0000085C:             ; GSHARP_HIGH         EQU     0x04        
+0000085C:             ; G_HIGH          EQU     0x05    
+0000085C:             ; FSHARP_HIGH         EQU     0x06        
+0000085C:             ; F_HIGH              EQU     0x07        
+0000085C:             ; E_HIGH              EQU     0x08        
+0000085C:             ; Eb_HIGH             EQU     0x09        
+0000085C:             ; D_HIGH              EQU     0x0A        
+0000085C:             ; CSHARP_HIGH         EQU     0x0B        
+0000085C:             ; C_LOW           EQU     0x0C    
+0000085C:             ; B_LOW               EQU     0x0D        
+0000085C:             ; Bb_LOW              EQU     0x0E        
+0000085C:             ; A_LOW               EQU     0x0F        
+0000085C:             ; GSHARP_LOW          EQU     0x10        
+0000085C:             ; G_LOW               EQU     0x11        
+0000085C:             ; FSHARP_LOW      EQU     0x12    
+0000085C:             ; F_LOW               EQU     0x13        
+0000085C:             ; E_LOW               EQU     0x14        
+0000085C:             ; Eb_LOW              EQU     0x15        
+0000085C:             ; D_LOW               EQU     0x16        
+0000085C:             ; CSHARP_LOW          EQU     0x17        
+0000085C:             ; C_LOW_LOW           EQU     0x18
+0000085C:             ; REST            EQU     0xFE
+0000085C:             ; EOF             EQU     0xFF
+0000085C:             ; ; -------------------------
+0000085C:             ; ALIGN
+0000085C:             ; INCLUDE    ../Bibliotecas/System/UTIL.s             ; Assorted useful functions
+0000085C:             ; ;-----------------------------------------------------
+0000085C:             ; ; Utilities Library
+0000085C:             ; ; R. Cruise
+0000085C:             ; ; Version 1.0
+0000085C:             ; ; 11 February 2025
+0000085C:             ; ;
+0000085C:             ; ; This library contains some general use functions.
+0000085C:             ; ; Functions:
+0000085C:             ; ; - DELAY
+0000085C:             ; ; - UINT_TO_BCD
+0000085C:             ; ;
+0000085C:             ; ; Last modified: 09/05/25
+0000085C:             ; ;
+0000085C:             ; ; Known bugs: None
+0000085C:             ; ;
+0000085C:             ; ;-----------------------------------------------------
+0000085C:             ; 
+0000085C:             ; 
+0000085C:             ; ; DELAY (A0: number of cycles)
+0000085C:             ; ; Loops the given number of times to implement a delay.
+0000085C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000085C:             ; DELAY
+0000085C:             ; ; No need to push and pop registers as is a leaf call.            
+0000085C: 00050293    ;             MV      T0, A0
+00000860:             ; DELAY_LOOP   
+00000860: FFF28293    ;             SUBI    T0, T0, 1
+00000864: FE029EE3    ;             BNEZ    T0, DELAY_LOOP
+00000868:             ;             
+00000868: 00008067    ;             RET
+0000086C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000086C:             ; 
+0000086C:             ; 
+0000086C:             ; ; UINT_TO_BCD(A0: Unsigned binary value)
+0000086C:             ; ; Convert unsigned binary value in A0 into BCD representation, returned in A0
+0000086C:             ; ; Any overflowing digits are generated, but not retained or returned in this
+0000086C:             ; ; version.
+0000086C:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+0000086C:             ; UINT_TO_BCD
+0000086C:             ; 
+0000086C: 00000297    ;             LA      T0, DEC_TABLE       ; Point at conversion table
+00000870: 03828293    ; 
+00000874: 00000313    ;             MV      T1, ZERO            ; Zero accumulator
+00000878: 00100E13    ;             LI      T3, 1               ; Termination value
+0000087C: 0180006F    ;             J       UTB_LOOP_IN         ; Enter loop
+00000880:             ; 
+00000880:             ; UTB_LOOP
+00000880: 02755EB3    ;             DIVU    T4, A0, T2          ; T4 is next decimal digit
+00000884: 02757533    ;             REMU    A0, A0, T2          ; A0 is the remainder
+00000888:             ; 
+00000888: 01D30333    ;             ADD     T1, T1, T4          ; Accumulate result
+0000088C: 00431313    ;             SLLI    T1, T1, 4           ; Shift accumulator
+00000890:             ; 
+00000890: 00428293    ;             ADDI    T0, T0, 4           ; Step pointer
+00000894:             ; 
+00000894:             ; UTB_LOOP_IN
+00000894: 0002A383    ;             LW      T2, [T0]            ; Get next divisor
+00000898: FFC394E3    ;             BNE     T2, T3, UTB_LOOP    ; Termination condition?
+0000089C:             ; 
+0000089C:             ; UTB_OUT
+0000089C: 00A30533    ;             ADD     A0, T1, A0          ; Accumulate result to output
+000008A0:             ; 
+000008A0: 00008067    ;             RET
+000008A4:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+000008A4:             ; 
+000008A4:             ; ; Defined Memory: -----------------------
+000008A4: 3B9ACA00    ; DEC_TABLE   DEFW    1000000000, 100000000, 10000000, 1000000
+000008A8: 05F5E100    ; 
+000008AC: 00989680    ; 
+000008B0: 000F4240    ; 
+000008B4: 000186A0    ;             DEFW    100000, 10000, 1000, 100, 10, 1
+000008B8: 00002710    ; 
+000008BC: 000003E8    ; 
+000008C0: 00000064    ; 
+000008C4: 0000000A    ; 
+000008C8: 00000001    ; 
+000008CC:             ; ; ---------------------------------------
+000008CC:             ; 
+000008CC:             ; ALIGN
+000008CC:             ; INCLUDE    ../Bibliotecas/System/LED.s              ; For writing to the LEDs
+000008CC:             ; ;-----------------------------------------------------
+000008CC:             ; ; Library for interfacing with the LEDS
+000008CC:             ; ; R. Cruise
+000008CC:             ; ; Version 1.0
+000008CC:             ; ; 09 May 2025
+000008CC:             ; ;
+000008CC:             ; ; Functions:
+000008CC:             ; ; - WRITE_TO_LEDS
+000008CC:             ; ;
+000008CC:             ; ; Last modified: 09/05/25 
+000008CC:             ; ;
+000008CC:             ; ; Known bugs: None.
+000008CC:             ; ; Dependencies: None.
+000008CC:             ; ;-----------------------------------------------------
+000008CC:             ; 
+000008CC:             ; ; Useful Macros: -------------------------------------
+000008CC:             ; LED_ADDR    EQU     0x0001_0000
+000008CC:             ; ; ----------------------------------------------------
+000008CC:             ; 
+000008CC:             ; 
+000008CC:             ; ; WRITE_TO_LEDS (Pattern: A0)
+000008CC:             ; ; Does what it says on the tin.
+000008CC:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000008CC:             ; WRITE_TO_LEDS
+000008CC: 000102B7    ;             LI      T0, LED_ADDR
+000008D0: 00028293    ; 
+000008D4: 00A28023    ;             SB      A0, [T0]
+000008D8: 00008067    ;             RET
+000008DC:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -    
+000008DC:             ; 
+000008DC:             ; ; ---------------------------------------
+000008DC:             ; 
+000008DC:             ; ; User Space: -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  -  
+                      ; -  -  -  -  -
+00040000:             ; ORG 0x0004_0000
+00040000:             ; 
+00040000:             ; ; User Stack: ---------------------------
+00040000:             ; ALIGN
+00040000:             ; MAIN_STACK   DEFS 500
+000401F4:             ; MAIN_STACK_TOP
+000401F4:             ; ; ---------------------------------------
+000401F4:             ; 
+000401F4:             ; ; Main Program:
+000401F4:             ; 
+000401F4:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+000401F4:             ; MAIN        
+000401F4:             ;             ; Write user instructions to lcd
+000401F4: 00000517    ;             LA      A0, INSTRUCTIONS             
+000401F8: 0B750513    ; 
+000401FC: 00200893    ;             LI      A7, E_PRINT_STRING
+00040200: 00000073    ;             ECALL
+00040204:             ; 
+00040204:             ;             ; Set up keystream with system call, pass in user space pointers.
+00040204: 00000517    ;             LA      A0, KEY_STREAM              
+00040208: 08C50513    ; 
+0004020C: 00000597    ;             LA      A1, KEY_STREAM_F
+00040210: 08858593    ; 
+00040214: 00E00893    ;             LI      A7, E_K_READ_KEY_STREAM    
+00040218: 00000073    ;             ECALL
+0004021C:             ; 
+0004021C:             ; 
+0004021C:             ; MAIN_LOOP   
+0004021C:             ;             ; Load keypress flag
+0004021C: 00000297    ;             LA T0, KEY_STREAM_F
+00040220: 07828293    ; 
+00040224: 0002A403    ;             LW S0, 0[T0]
+00040228:             ; 
+00040228: FE044AE3    ;             BLTZ    S0, MAIN_LOOP               ; If flag is still -1 (no change), do nothing (
+                      ; continue polling.)
+0004022C:             ; 
+0004022C:             ;             ; Flag set, key has been written, clear flag, then read key
+0004022C: FFF00413    ;             LI      S0, -1
+00040230: 00000297    ;             SW      S0, KEY_STREAM_F, T0        ; Clear flag
+00040234: 0682A223    ; 
+00040238:             ; 
+00040238: 00000417    ;             LW      S0, KEY_STREAM              ; Read key
+0004023C: 05842403    ; 
+00040240:             ;             
+00040240: 00200493    ;             LI      S1, TUNE_MAX                ; Tune out of range?
+00040244: FC84ECE3    ;             BGTU    S0, S1, MAIN_LOOP
+00040248:             ; 
+00040248: 00000497    ;             LA      S1, TUNES                   ; Calculate address of tune and load into A0
+0004024C: 05048493    ; 
+00040250: 00241913    ;             SLLI    S2, S0, 2                   ; Multiply offset by 4 to get word offset
+00040254: 012484B3    ;             ADD     S1, S1, S2
+00040258: 0004A503    ;             LW      A0, [S1]
+0004025C:             ; 
+0004025C: 01000893    ;             LI      A7, E_B_PLAY_TUNE           
+00040260: 00000073    ;             ECALL
+00040264:             ; 
+00040264: 00400893    ;             LI      A7, E_CLEAR                 ; Clear the display
+00040268: 00000073    ;             ECALL
+0004026C:             ; 
+0004026C: 00000517    ;             LA      A0, PREFIX                  ; Write "Tune: " to lCD
+00040270: 03850513    ; 
+00040274: 00200893    ;             LI      A7, E_PRINT_STRING
+00040278: 00000073    ;             ECALL
+0004027C:             ; 
+0004027C: 00040513    ;             MV      A0, S0
+00040280: 03050513    ;             ADDI    A0, A0, 48                  ; ASCII Offset
+00040284: 00100893    ;             LI      A7, E_PRINT_CHAR            ; Print tune number to LCD
+00040288: 00000073    ;             ECALL                   
+0004028C:             ; 
+0004028C: F91FF06F    ;             J   MAIN_LOOP
+00040290:             ; 
+00040290:             ; 
+00040290:             ; ; -----------------------------------------------------------------------
+00040290:             ; ; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+00040290:             ; 
+00040290:             ; ; Defined Memory: -----------------------
+00040290: 00000000    ; KEY_STREAM           DEFW      0
+00040294: FFFFFFFF    ; KEY_STREAM_F         DEFW     -1        ; Sticky bit / flag that goes high when key stream has 
+                      ; been written to by ISR
+00040298:             ; ; ---------------------------------------
+00040298:             ; 
+00040298:             ; ; User Library Imports ----------------
+00040298:             ; ; ---------------------------------------
+00040298:             ; ; Write user instructions to lcd
+00040298:             ; ; Macros: -------------------------------
+00040298:             ; INTERRUPT_ADDR      EQU     0x0001_0400
+00040298:             ; INTERRUPT_EN_O      EQU     0x04
+00040298:             ; INTERRUPT_BTN_BIT   EQU     5
+00040298:             ; INTERRUPT_MODE_O    EQU     0x0C
+00040298:             ; ; ---------------------------------------
+00040298:             ; 
+00040298:             ; 
+00040298:             ; TUNES ;
+00040298: 000402BC    ; DEFW    TUNE_0
+0004029C: 000402E4    ; DEFW    TUNE_1
+000402A0: 00040358    ; DEFW    TUNE_2
+000402A4:             ; 
+000402A4:             ; TUNE_MAX EQU 2
+000402A4:             ; 
+000402A4:             ; ALIGN
+000402A4: 54 75 6E 65 ; PREFIX                  DEFB "Tune: ",0
+000402A8: 3A 20 00    ; 
+000402AB: 50 72 65 73 ; INSTRUCTIONS            DEFB "Press 0,1 or 2:",0
+000402AF: 73 20 30 2C ; 
+000402B3: 31 20 6F 72 ; 
+000402B7: 20 32 3A 00 ; 
+000402BB:             ; 
+000402BB:             ; 
+000402BC:             ; ALIGN ; God Save The King (At time of writing, though I hear he is pretty healthy)
+000402BC: 0C 46       ; TUNE_0      DEFB         C_LOW,     70
+000402BE: FE 0A       ;             DEFB         REST,      10
+000402C0: 0C 50       ;             DEFB         C_LOW,     80
+000402C2: 0A 50       ;             DEFB         D_HIGH,    80
+000402C4: 0D 78       ;             DEFB         B_LOW,     120
+000402C6: 0C 28       ;             DEFB         C_LOW,     40
+000402C8: 0A 50       ;             DEFB         D_HIGH,    80
+000402CA:             ; 
+000402CA: 08 46       ;             DEFB         E_HIGH,    70
+000402CC: FE 0A       ;             DEFB         REST,      10
+000402CE: 08 50       ;             DEFB         E_HIGH,    80
+000402D0: 07 50       ;             DEFB         F_HIGH,    80
+000402D2: 08 78       ;             DEFB         E_HIGH,    120
+000402D4: 0A 28       ;             DEFB         D_HIGH,    40
+000402D6: 0C 50       ;             DEFB         C_LOW,     80
+000402D8:             ; 
+000402D8: 0A 50       ;             DEFB         D_HIGH,    80
+000402DA: 0C 50       ;             DEFB         C_LOW,     80
+000402DC: 0D 50       ;             DEFB         B_LOW,     80
+000402DE: 0C A0       ;             DEFB         C_LOW,     160
+000402E0:             ; 
+000402E0: FF          ;             DEFB         EOF
+000402E1:             ; 
+000402E4:             ; ALIGN
+000402E4:             ; TUNE_1 ; Seven Nation Army (The white stripes)
+000402E4: 08 30       ;             DEFB    E_HIGH, 48
+000402E6: FE 18       ;             DEFB    REST, 24
+000402E8: 08 18       ;             DEFB    E_HIGH, 24
+000402EA: 05 24       ;             DEFB    G_HIGH, 36
+000402EC: 08 24       ;             DEFB    E_HIGH, 36
+000402EE: 0A 18       ;             DEFB    D_HIGH, 24
+000402F0:             ; 
+000402F0: 0C 60       ;             DEFB    C_LOW, 96
+000402F2: 0D 60       ;             DEFB    B_LOW, 96
+000402F4:             ; 
+000402F4: 08 48       ;             DEFB    E_HIGH, 72
+000402F6: 08 18       ;             DEFB    E_HIGH, 24
+000402F8: 05 24       ;             DEFB    G_HIGH, 36
+000402FA: 08 24       ;             DEFB    E_HIGH, 36
+000402FC: 0A 18       ;             DEFB    D_HIGH, 24
+000402FE:             ; 
+000402FE: 0C 60       ;             DEFB    C_LOW, 96
+00040300: 0D 60       ;             DEFB    B_LOW, 96
+00040302:             ; 
+00040302:             ; 
+00040302:             ; 
+00040302: 08 30       ;             DEFB    E_HIGH, 48
+00040304: FE 18       ;             DEFB    REST, 24
+00040306: 08 18       ;             DEFB    E_HIGH, 24
+00040308: 05 24       ;             DEFB    G_HIGH, 36
+0004030A: 08 24       ;             DEFB    E_HIGH, 36
+0004030C: 0A 18       ;             DEFB    D_HIGH, 24
+0004030E:             ; 
+0004030E: 0C 60       ;             DEFB    C_LOW, 96
+00040310: 0D 60       ;             DEFB    B_LOW, 96
+00040312:             ; 
+00040312: 08 48       ;             DEFB    E_HIGH, 72
+00040314: 08 18       ;             DEFB    E_HIGH, 24
+00040316: 05 24       ;             DEFB    G_HIGH, 36
+00040318: 08 24       ;             DEFB    E_HIGH, 36
+0004031A: 0A 18       ;             DEFB    D_HIGH, 24
+0004031C:             ; 
+0004031C: 0C 60       ;             DEFB    C_LOW, 96
+0004031E: 0D 18       ;             DEFB    B_LOW, 24
+00040320: 08 18       ;             DEFB    E_HIGH, 24
+00040322: 08 18       ;             DEFB    E_HIGH, 24
+00040324: 08 18       ;             DEFB    E_HIGH, 24
+00040326:             ; 
+00040326:             ; 
+00040326:             ; 
+00040326: 05 18       ;             DEFB    G_HIGH, 24
+00040328: 08 18       ;             DEFB    E_HIGH, 24
+0004032A: 08 30       ;             DEFB    E_HIGH, 48
+0004032C: FE 60       ;             DEFB    REST, 96
+0004032E:             ; 
+0004032E: FE 48       ;             DEFB    REST, 72
+00040330: 0A 18       ;             DEFB    D_HIGH, 24
+00040332: 08 18       ;             DEFB    E_HIGH, 24
+00040334: 0A 18       ;             DEFB    D_HIGH, 24
+00040336: 08 18       ;             DEFB    E_HIGH, 24
+00040338: 0A 18       ;             DEFB    D_HIGH, 24
+0004033A:             ; 
+0004033A: 08 18       ;             DEFB    E_HIGH, 24
+0004033C: 0A 18       ;             DEFB    D_HIGH, 24
+0004033E: 08 18       ;             DEFB    E_HIGH, 24
+00040340: 0A 18       ;             DEFB    D_HIGH, 24
+00040342: 08 24       ;             DEFB    E_HIGH, 36
+00040344: 08 24       ;             DEFB    E_HIGH, 36
+00040346: 08 18       ;             DEFB    E_HIGH, 24
+00040348:             ; 
+00040348: 08 30       ;             DEFB    E_HIGH, 48
+0004034A: FE 30       ;             DEFB    REST, 48
+0004034C: FE 18       ;             DEFB    REST, 24
+0004034E: 08 18       ;             DEFB    E_HIGH, 24
+00040350: 08 18       ;             DEFB    E_HIGH, 24
+00040352: 08 18       ;             DEFB    E_HIGH, 24
+00040354:             ; 
+00040354:             ; 
+00040354:             ; 
+00040354: FF          ;             DEFB    EOF
+00040355:             ; 
+00040355:             ; 
+00040358:             ; ALIGN
+00040358:             ; TUNE_2 ; Nokia ringtone (Francisco Tárrega's Gran Vals)
+00040358:             ; 
+00040358: 08 0A       ;         DEFB    E_HIGH,        10
+0004035A: 0A 0A       ;         DEFB    D_HIGH,        10
+0004035C: 12 14       ;         DEFB    FSHARP_LOW,   20
+0004035E: 10 14       ;         DEFB    GSHARP_LOW,   20
+00040360:             ; 
+00040360: 0B 0A       ;         DEFB    CSHARP_HIGH,   10
+00040362: 0D 0A       ;         DEFB    B_LOW,        10
+00040364: 16 14       ;         DEFB    D_LOW,        20
+00040366: 14 14       ;         DEFB    E_LOW,        20
+00040368:             ; 
+00040368: 0D 0A       ;         DEFB    B_LOW,        10
+0004036A: 0F 0A       ;         DEFB    A_LOW,        10
+0004036C: 17 14       ;         DEFB    CSHARP_LOW,   20
+0004036E: 14 14       ;         DEFB    E_LOW,        20
+00040370: 0F 28       ;         DEFB    A_LOW,        40
+00040372:             ; 
+00040372: FF          ;         DEFB    EOF
+00040373:             ; 
+
+Symbol Table: Labels
+: OS_STACK                          00000070  Label
+: OS_STACK_TOP                      00000264  Label
+: TRAPPER                           00000264  Label
+: TRAPPER_EXIT                      00000288  Label
+: ECALL_HANDLER                     000002A0  Label
+: ECALL_HANDLER_END                 000002C0  Label
+: ECALL_0                           000002D0  Label
+: ECALL_3                           000002D4  Label
+: ECALL_15                          000002E0  Label
+: ECALL_X                           00000310  Label
+: ECALL_JUMP                        00000314  Label
+: JT_PCR                            00000318  Label
+: JT_PST                            0000031C  Label
+: JT_PNM                            00000320  Label
+: JT_LCL                            00000324  Label
+: JT_TRD                            00000328  Label
+: JT_TIN                            0000032C  Label
+: JT_TST                            00000330  Label
+: JT_TME                            00000334  Label
+: JT_BRD                            00000338  Label
+: JT_TPA                            0000033C  Label
+: JT_TRC                            00000340  Label
+: JT_TSC                            00000344  Label
+: JT_KRK                            00000348  Label
+: JT_RKS                            0000034C  Label
+: JT_BBZ                            00000350  Label
+: JT_BPT                            00000354  Label
+: E_INVALID                         00000358  Label
+: E_STOP                            00000000  Value
+: E_PRINT_CHAR                      00000001  Value
+: E_PRINT_STRING                    00000002  Value
+: E_PRINT_NUM                       00000003  Value
+: E_CLEAR                           00000004  Value
+: E_T_READ                          00000005  Value
+: E_T_INIT                          00000006  Value
+: E_T_START                         00000007  Value
+: E_T_EN_MOD                        00000008  Value
+: E_B_READ                          00000009  Value
+: E_T_STOP                          0000000A  Value
+: E_T_READ_CTRL                     0000000B  Value
+: E_T_CLR_STICKY                    0000000C  Value
+: E_K_READ_KEY                      0000000D  Value
+: E_K_READ_KEY_STREAM               0000000E  Value
+: E_B_BUZZ                          0000000F  Value
+: E_B_PLAY_TUNE                     00000010  Value
+: ECALL_OOB                         00000011  Value
+: INTERRUPT_REQ_O                   00000008  Value
+: BTN_REQ_BIT                       00000002  Value
+: INTERRUPT_EDGE_O                  00000010  Value
+: INTERRUPT_TMR_BIT                 00000004  Value
+: INTERRUPT_ADDR                    00010400  Value
+: INTERRUPT_EN_O                    00000004  Value
+: INTERRUPT_BTN_BIT                 00000005  Value
+: INTERRUPT_BZR_BIT                 00000000  Value
+: INTERRUPT_MODE_O                  0000000C  Value
+: EXTERNAL_I_HANDLER                00000358  Label
+: EXTERNAL_I_HANDLER_EXIT           000003C0  Label
+: BUTTON_PRESSED                    00000408  Label
+: TIMER_TICKED                      0000041C  Label
+: CONTINUE                          00000458  Label
+: BUZZER_FINISHED                   0000046C  Label
+: STREAM_ADDR                       000004C0  Label
+: STREAM_F_ADDR                     000004C4  Label
+: LAST_READ                         000004C8  Label
+: LCD_ADDR                          00010100  Value
+: BACK_LIGHT                        00000800  Value
+: ENABLE                            00000400  Value
+: RS_DATA_nCTRL                     00000200  Value
+: READ_nWRITE                       00000100  Value
+: STATUS                            00000080  Value
+: CLEAR                             00000001  Value
+: LCD_P_STRING                      000004CC  Label
+: P_LOOP                            000004E4  Label
+: P_ENTRY                           000004EC  Label
+: LCD_P_BCD                         00000508  Label
+: P_BCD_LOOP                        0000052C  Label
+: LCD_P_CHAR                        00000564  Label
+: LCD_CLEAR                         00000588  Label
+: WRITE_TO_REG                      000005B0  Label
+: LOOP_WB                           000005E4  Label
+: TIMER_ADDR                        00010200  Value
+: MODULUS_O                         00000004  Value
+: CONTROL_REG_O                     0000000C  Value
+: CONTROL_SET_O                     00000014  Value
+: CONTROL_CL_O                      00000010  Value
+: ENABLE_BIT                        00000000  Value
+: MODULUS_BIT                       00000001  Value
+: STICKY_BIT                        0000001F  Value
+: INTERRUPT_BIT                     00000003  Value
+: TIMER_READ                        0000065C  Label
+: TIMER_INIT                        0000066C  Label
+: TIMER_START                       0000067C  Label
+: TIMER_MODULUS_ENABLE              00000690  Label
+: TIMER_INTERRUPT_ENABLE            000006A8  Label
+: TIMER_STOP                        000006BC  Label
+: TIMER_READ_CTRL                   000006D0  Label
+: TIMER_STICKY_CLEAR                000006E0  Label
+: BUTTON_ADDR                       00010001  Value
+: BUTTON_READ                       000006F8  Label
+: KEYPAD_ADDR                       00010300  Value
+: KP_DIRECTION_O                    00000004  Value
+: KP_CLEAR_O                        00000008  Value
+: KP_SET_O                          0000000C  Value
+: KP_DIRECTION_PTN                  FFFFF8FF  Value
+: KP_INPUT_MSK                      0000F000  Value
+: SCAN_DELAY                        0000000A  Value
+: KP_INIT                           00000708  Label
+: KP_READ_KEY                       0000071C  Label
+: SCAN_LOOP                         00000758  Label
+: KEY_PRESSED                       0000078C  Label
+: LOG_2_LP                          00000794  Label
+: READ_KEY_END                      000007B8  Label
+: KEYPAD_MAP                        000007D8  Label
+: BUZZER_ADDR                       00020000  Value
+: BUZZER_INTRPT_CLR_O               00000004  Value
+: BUZZER_CONFIG_ADDR                00010708  Value
+: BUZZER_CONFIG_PTN                 000000C0  Value
+: BUZZER_BUZZ                       000007E4  Label
+: BUZZER_INIT                       000007FC  Label
+: BUZZER_CLEAR_INTRPT               0000081C  Label
+: BUZZER_PLAY_TUNE                  0000082C  Label
+: NEXT_NOTE_ADDR                    00000858  Label
+: C_HIGH                            00000000  Value
+: B_HIGH                            00000001  Value
+: Bb_HIGH                           00000002  Value
+: A_HIGH                            00000003  Value
+: GSHARP_HIGH                       00000004  Value
+: G_HIGH                            00000005  Value
+: FSHARP_HIGH                       00000006  Value
+: F_HIGH                            00000007  Value
+: E_HIGH                            00000008  Value
+: Eb_HIGH                           00000009  Value
+: D_HIGH                            0000000A  Value
+: CSHARP_HIGH                       0000000B  Value
+: C_LOW                             0000000C  Value
+: B_LOW                             0000000D  Value
+: Bb_LOW                            0000000E  Value
+: A_LOW                             0000000F  Value
+: GSHARP_LOW                        00000010  Value
+: G_LOW                             00000011  Value
+: FSHARP_LOW                        00000012  Value
+: F_LOW                             00000013  Value
+: E_LOW                             00000014  Value
+: Eb_LOW                            00000015  Value
+: D_LOW                             00000016  Value
+: CSHARP_LOW                        00000017  Value
+: C_LOW_LOW                         00000018  Value
+: REST                              000000FE  Value
+: EOF                               000000FF  Value
+: DELAY                             0000085C  Label
+: DELAY_LOOP                        00000860  Label
+: UINT_TO_BCD                       0000086C  Label
+: UTB_LOOP                          00000880  Label
+: UTB_LOOP_IN                       00000894  Label
+: UTB_OUT                           0000089C  Label
+: DEC_TABLE                         000008A4  Label
+: LED_ADDR                          00010000  Value
+: WRITE_TO_LEDS                     000008CC  Label
+: MAIN_STACK                        00040000  Label
+: MAIN_STACK_TOP                    000401F4  Label
+: MAIN                              000401F4  Label
+: MAIN_LOOP                         0004021C  Label
+: KEY_STREAM                        00040290  Label
+: KEY_STREAM_F                      00040294  Label
+: TUNES                             00040298  Label
+: TUNE_MAX                          00000002  Value
+: PREFIX                            000402A4  Label
+: INSTRUCTIONS                      000402AB  Label
+: TUNE_0                            000402BC  Label
+: TUNE_1                            000402E4  Label
+: TUNE_2                            00040358  Label
